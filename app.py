@@ -1,29 +1,24 @@
 from flask import Flask, render_template, request, jsonify
 from bs4 import BeautifulSoup
 import requests
-import nltk
-from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk.tag import pos_tag
-from nltk.chunk import ne_chunk
-from collections import Counter
 import re
-from pytrends.request import TrendReq
+from collections import Counter
+import json
 from datetime import datetime, timedelta
-import pandas as pd
-from nltk.util import ngrams
 import time
-import traceback
+from pytrends.request import TrendReq
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+import nltk
+import os
 import threading
-import torch
-from transformers import AutoTokenizer, AutoModel
-import numpy as np
+import random
+from waitress import serve
 
 app = Flask(__name__)
 
 # Download required NLTK data
 nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
-nltk.download('maxent_ne_chunker')
 nltk.download('words')
 nltk.download('stopwords')
 
@@ -56,6 +51,29 @@ SEO_BENCHMARKS = {
     }
 }
 
+# Cache for Google Trends data
+trend_cache = {}
+trend_cache_lock = threading.Lock()
+TREND_CACHE_DURATION = 86400  # Cache for 24 hours
+
+# Rate limiting for Google Trends
+last_request_time = 0
+request_lock = threading.Lock()
+MIN_REQUEST_INTERVAL = 20  # Minimum seconds between requests
+
+def wait_for_rate_limit():
+    """Ensure minimum delay between requests with jitter."""
+    global last_request_time
+    with request_lock:
+        current_time = time.time()
+        time_since_last = current_time - last_request_time
+        if time_since_last < MIN_REQUEST_INTERVAL:
+            # Add jitter to avoid synchronized requests
+            jitter = random.uniform(0, 2)
+            wait_time = MIN_REQUEST_INTERVAL - time_since_last + jitter
+            time.sleep(wait_time)
+        last_request_time = time.time()
+
 def extract_key_phrases(text):
     """Extract key phrases including multi-word terms from text."""
     # Use cached tokenizers for better performance
@@ -69,7 +87,7 @@ def extract_key_phrases(text):
     for sentence in sentences:
         # Use cached word tokenizer
         words = word_tokenizer.tokenize(sentence)
-        tagged = pos_tag(words)
+        tagged = nltk.pos_tag(words)
         
         # Use set for faster lookups
         valid_words = {
@@ -85,16 +103,11 @@ def extract_key_phrases(text):
         # Generate n-grams only from valid words for better performance
         if len(valid_words) > 1:
             word_list = list(valid_words)
-            all_phrases.extend(' '.join(gram) for gram in ngrams(word_list, 2))
+            all_phrases.extend(' '.join(gram) for gram in nltk.ngrams(word_list, 2))
             if len(valid_words) > 2:
-                all_phrases.extend(' '.join(gram) for gram in ngrams(word_list, 3))
+                all_phrases.extend(' '.join(gram) for gram in nltk.ngrams(word_list, 3))
     
     return all_phrases
-
-# Cache for Google Trends data
-trend_cache = {}
-trend_cache_lock = threading.Lock()
-TREND_CACHE_DURATION = 3600  # Cache for 1 hour
 
 def get_trend_data(keywords):
     """Get trend data for keywords using Google Trends with caching."""
@@ -112,7 +125,7 @@ def get_trend_data(keywords):
     current_time = time.time()
 
     # First check cache for all keywords
-    for keyword in keywords[:5]:
+    for keyword in keywords[:5]:  # Limit to 5 keywords
         with trend_cache_lock:
             if keyword in trend_cache:
                 cached_data, cache_time = trend_cache[keyword]
@@ -124,12 +137,11 @@ def get_trend_data(keywords):
         trend_scores[keyword] = get_default_trend()
 
     try:
-        # Initialize pytrends
+        # Initialize pytrends with longer timeout
         print("\n=== Initializing Google Trends ===")
-        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10,25))
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(15,30), retries=2, backoff_factor=1.5)
         
-        # Process uncached keywords with significant delays
-        base_delay = 5.0  # Start with 5 second delay
+        # Process uncached keywords
         max_retries = 3
         
         for keyword in [k for k in keywords[:5] if trend_scores[k] == get_default_trend()]:
@@ -146,10 +158,8 @@ def get_trend_data(keywords):
 
                     print(f"\nFetching trend data for: '{norm_keyword}'")
                     
-                    # Add significant delay between requests
-                    current_delay = base_delay * (2 ** retry_count)
-                    print(f"Waiting {current_delay} seconds before request...")
-                    time.sleep(current_delay)
+                    # Use rate limiter
+                    wait_for_rate_limit()
                     
                     # Get trend data
                     pytrends.build_payload([norm_keyword], timeframe='today 3-m')
@@ -163,56 +173,43 @@ def get_trend_data(keywords):
                         print(f"Keyword '{norm_keyword}' not found in response columns: {data.columns}")
                         break
 
+                    # Process the data
                     values = data[norm_keyword].values
                     avg = float(values.mean())
-                    recent = float(values[-7:].mean() if len(values) >= 7 else values.mean())
+                    recent = float(values[-7:].mean())  # Last week's average
+                    trend_up = recent > avg
 
-                    print(f"Trend data for '{norm_keyword}':")
-                    print(f"- Average interest: {avg:.1f}")
-                    print(f"- Recent interest: {recent:.1f}")
-                    print(f"- Trending up: {recent > avg}")
-
-                    result = {
-                        'average_interest': round(avg, 1),
-                        'recent_interest': round(recent, 1),
-                        'trending_up': recent > avg
+                    trend_data = {
+                        'average_interest': round(avg),
+                        'recent_interest': round(recent),
+                        'trending_up': trend_up
                     }
 
-                    # Update both cache and results
+                    # Cache the results
                     with trend_cache_lock:
-                        trend_cache[keyword] = (result, current_time)
-                    trend_scores[keyword] = result
+                        trend_cache[keyword] = (trend_data, current_time)
+                    
+                    trend_scores[keyword] = trend_data
                     success = True
+                    print(f"Successfully fetched trend data for '{norm_keyword}'")
 
-                except requests.exceptions.RequestException as e:
-                    retry_count += 1
-                    if "429" in str(e):
-                        if retry_count < max_retries:
-                            wait_time = 10 * (2 ** retry_count)  # 20s, 40s, 80s
-                            print(f"Rate limit hit for '{keyword}', waiting {wait_time} seconds...")
-                            time.sleep(wait_time)
-                        else:
-                            print(f"Max retries reached for '{keyword}', using default values")
-                    else:
-                        print(f"Request error for '{keyword}': {str(e)}")
-                        break
-                        
                 except Exception as e:
-                    print(f"Error processing trend data for '{keyword}':")
-                    print(f"- Error type: {type(e).__name__}")
-                    print(f"- Error message: {str(e)}")
-                    traceback.print_exc()
-                    break
+                    retry_count += 1
+                    if '429' in str(e):
+                        # Rate limit hit - use exponential backoff
+                        wait_time = (MIN_REQUEST_INTERVAL * 2 ** retry_count) + random.uniform(0, 5)
+                        print(f"Rate limit hit for '{keyword}', waiting {wait_time:.1f} seconds...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"Error fetching trends for '{keyword}': {str(e)}")
+                        if retry_count == max_retries:
+                            print(f"Max retries reached for '{keyword}', using default values")
+                            break
+                        time.sleep(5)  # Basic delay for non-rate-limit errors
 
     except Exception as e:
-        print("\n=== Fatal error in trend analysis ===")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
-        traceback.print_exc()
-
-    print("\n=== Final trend scores ===")
-    for kw, score in trend_scores.items():
-        print(f"{kw}: {score}")
+        print(f"Error in Google Trends processing: {str(e)}")
+        # Continue with default values for remaining keywords
 
     return trend_scores
 
@@ -476,60 +473,16 @@ def analyze_seo(content, content_type='article'):
     
     return results
 
-# Initialize transformer model and tokenizer lazily to save memory
-model = None
-tokenizer = None
-
-def get_llm_model():
-    """Lazily initialize the LLM model and tokenizer."""
-    global model, tokenizer
-    if model is None or tokenizer is None:
-        try:
-            tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-            model = AutoModel.from_pretrained('bert-base-uncased')
-            return model, tokenizer
-        except Exception as e:
-            print(f"Error initializing LLM model: {str(e)}")
-            return None, None
-    return model, tokenizer
-
 def compute_llm_attention_scores(text, max_length=512):
     """Compute attention-based importance scores for text segments."""
     try:
-        model, tokenizer = get_llm_model()
-        if model is None or tokenizer is None:
-            print("LLM model not available, skipping attention scores")
-            return {}
-            
-        # Tokenize and prepare input
-        inputs = tokenizer(text, return_tensors='pt', max_length=max_length, truncation=True)
-        
-        # Get model outputs with attention weights
-        with torch.no_grad():
-            outputs = model(**inputs, output_attentions=True)
-        
-        # Get attention weights from last layer
-        attention = outputs.attentions[-1].mean(dim=(0, 1))  # Average over heads and batch
-        
-        # Convert tokens to words and aggregate attention scores
-        tokens = tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
+        # Simple word overlap similarity for now
+        words = word_tokenize(text)
         word_scores = {}
-        current_word = ''
-        current_score = 0
         
-        for token, score in zip(tokens, attention):
-            if token.startswith('##'):
-                current_word += token[2:]
-                current_score += float(score)
-            else:
-                if current_word:
-                    word_scores[current_word] = current_score
-                current_word = token
-                current_score = float(score)
+        for word in words:
+            word_scores[word] = 1.0
         
-        if current_word:
-            word_scores[current_word] = current_score
-            
         # Normalize scores
         max_score = max(word_scores.values())
         normalized_scores = {word: score/max_score for word, score in word_scores.items()}
@@ -541,26 +494,18 @@ def compute_llm_attention_scores(text, max_length=512):
         return {}
 
 def compute_embedding_similarity(text, keywords):
-    """Compute similarity between text and keywords in embedding space."""
     try:
-        model, tokenizer = get_llm_model()
-        if model is None or tokenizer is None:
-            print("LLM model not available, skipping embedding similarity")
-            return {}
-            
-        # Get embeddings for text and keywords
-        with torch.no_grad():
-            text_inputs = tokenizer(text, return_tensors='pt', max_length=512, truncation=True)
-            text_embedding = model(**text_inputs).last_hidden_state.mean(dim=1)
-            
-            keyword_scores = {}
-            for keyword in keywords:
-                keyword_inputs = tokenizer(keyword, return_tensors='pt')
-                keyword_embedding = model(**keyword_inputs).last_hidden_state.mean(dim=1)
-                
-                # Compute cosine similarity
-                similarity = torch.nn.functional.cosine_similarity(text_embedding, keyword_embedding)
-                keyword_scores[keyword] = float(similarity)
+        # Simple word overlap similarity for now
+        text_words = set(word_tokenize(text.lower()))
+        keyword_scores = {}
+        
+        for keyword in keywords:
+            keyword_words = set(word_tokenize(keyword.lower()))
+            # Use Jaccard similarity
+            intersection = len(text_words.intersection(keyword_words))
+            union = len(text_words.union(keyword_words))
+            similarity = intersection / union if union > 0 else 0
+            keyword_scores[keyword] = float(similarity)
                 
         return keyword_scores
         
@@ -602,4 +547,5 @@ if __name__ == '__main__':
     app.debug = True  # Enable debug mode
     import sys
     sys.stdout.reconfigure(line_buffering=True)  # Force unbuffered output
-    app.run(host='127.0.0.1', port=5000)
+    print("Starting server on http://127.0.0.1:5000")
+    serve(app, host='127.0.0.1', port=5000)
