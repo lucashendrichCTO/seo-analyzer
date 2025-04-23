@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEO Analyzer</title>
+    <style>
+        :root {
+            --terminal-green: #00ff00;
+            --terminal-dark-green: #003300;
+            --bg-color: #000000;
+            --dim-green: #004400;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background: var(--bg-color);
+            color: var(--terminal-green);
+            line-height: 1.6;
+            padding: 20px;
+            min-height: 100vh;
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: var(--bg-color);
+            border: 1px solid var(--terminal-green);
+            box-shadow: inset 0 0 10px var(--terminal-green);
+        }
+
+        h1 {
+            color: var(--terminal-green);
+            text-align: center;
+            font-size: 2em;
+            margin-bottom: 20px;
+            font-weight: normal;
+            border-bottom: 1px solid var(--terminal-green);
+            padding-bottom: 10px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 10px;
+            margin-bottom: 20px;
+            background: var(--bg-color);
+            border: 1px solid var(--terminal-green);
+            color: var(--terminal-green);
+            font-family: 'Courier New', Courier, monospace;
+            resize: vertical;
+            outline: none;
+        }
+
+        textarea:focus {
+            border-color: var(--terminal-green);
+            box-shadow: 0 0 5px var(--terminal-green);
+        }
+
+        .button-container {
+            text-align: center;
+            margin: 20px 0;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        button {
+            background: var(--bg-color);
+            color: var(--terminal-green);
+            border: 1px solid var(--terminal-green);
+            padding: 5px 15px;
+            font-size: 14px;
+            cursor: pointer;
+            font-family: 'Courier New', Courier, monospace;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: var(--terminal-green);
+            color: var(--bg-color);
+        }
+
+        #results {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid var(--terminal-green);
+            display: none;
+        }
+
+        .metric {
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid var(--dim-green);
+        }
+
+        .metric h3 {
+            color: var(--terminal-green);
+            margin-bottom: 10px;
+            font-weight: normal;
+            border-bottom: 1px dotted var(--dim-green);
+        }
+
+        table, .suggestions-list {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+
+        th, td, .suggestions-list li {
+            padding: 8px;
+            text-align: left;
+            border: 1px solid var(--dim-green);
+            font-size: 14px;
+        }
+
+        td {
+            background: rgba(0, 255, 0, 0.05);
+        }
+
+        td:hover {
+            background: rgba(0, 255, 0, 0.1);
+        }
+
+        /* First column in each table */
+        td:first-child {
+            font-weight: bold;
+            width: 25%;
+        }
+
+        /* Trend column */
+        td:last-child {
+            text-align: center;
+            width: 80px;
+        }
+
+        th {
+            background: var(--dim-green);
+            color: var(--terminal-green);
+        }
+
+        .suggestions-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .suggestions-list li {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--dim-green);
+            line-height: 1.4;
+        }
+
+        .suggestions-list li:last-child {
+            border-bottom: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+            font-size: 1.2em;
+            color: var(--terminal-green);
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+
+        .loading::after {
+            content: '';
+            animation: dots 1.5s infinite;
+            display: inline-block;
+            width: 30px;
+            text-align: left;
+        }
+
+        @keyframes dots {
+            0% { content: ''; }
+            25% { content: '.'; }
+            50% { content: '..'; }
+            75% { content: '...'; }
+            100% { content: ''; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SEO ANALYZER</h1>
+        <textarea id="content" placeholder="Enter your content here..."></textarea>
+        <div class="button-container">
+            <button onclick="analyzeSEO()">ANALYZE</button>
+            <button onclick="downloadReport()" id="downloadBtn" style="display: none;">DOWNLOAD REPORT</button>
+        </div>
+        <div id="loading" class="loading">ANALYZING</div>
+        <div id="results">
+            <div class="metric">
+                <h3>BASIC METRICS</h3>
+                <table>
+                    <tr><td>Word Count</td><td id="wordCount">0</td></tr>
+                </table>
+            </div>
+            <div class="metric">
+                <h3>KEYWORD ANALYSIS</h3>
+                <table id="keywordMetrics">
+                    <thead><tr><th>Keyword</th><th>Count</th><th>Frequency</th><th>Interest Score</th><th>Trend</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="metric">
+                <h3>HEADING STRUCTURE</h3>
+                <table id="headings">
+                    <tr><td>H1 Tags</td><td id="h1Count">0</td></tr>
+                    <tr><td>H2 Tags</td><td id="h2Count">0</td></tr>
+                    <tr><td>H3 Tags</td><td id="h3Count">0</td></tr>
+                </table>
+            </div>
+            <div class="metric">
+                <h3>META TAGS</h3>
+                <table id="metaTags"></table>
+            </div>
+            <div class="metric">
+                <h3>SUGGESTED KEYWORDS</h3>
+                <ul id="suggestedKeywords" class="suggestions-list"></ul>
+            </div>
+            <div class="metric">
+                <h3>LLM READABILITY SCORE</h3>
+                <div id="llmReadabilityScore"></div>
+                <ul id="llmReadabilitySuggestions" class="suggestions-list" style="margin-top:8px;"></ul>
+            </div>
+            <div class="metric">
+                <h3>SEO SUGGESTIONS</h3>
+                <ul id="suggestions" class="suggestions-list"></ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let analysisData = null;
+
+        function analyzeSEO() {
+            const content = document.getElementById('content').value;
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const downloadBtn = document.getElementById('downloadBtn');
+
+            if (!content) {
+                alert('Please enter some content to analyze');
+                return;
+            }
+
+            loading.style.display = 'block';
+            results.style.display = 'none';
+            downloadBtn.style.display = 'none';
+
+            fetch('/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    content: content,
+                    content_type: 'article'
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                analysisData = data;
+                document.getElementById('wordCount').textContent = data.word_count;
+                
+                // Keyword metrics table
+                const keywordTable = document.getElementById('keywordMetrics').querySelector('tbody');
+                keywordTable.innerHTML = data.keyword_metrics.map(keyword => `
+                    <tr>
+                        <td>${keyword.keyword}</td>
+                        <td>${keyword.count}</td>
+                        <td>${keyword.frequency}%</td>
+                        <td>${keyword.average_interest || 'N/A'}</td>
+                        <td>${keyword.trending_up ? '↑' : '↓'}</td>
+                    </tr>
+                `).join('');
+
+                // Heading counts
+                document.getElementById('h1Count').textContent = data.headings.h1;
+                document.getElementById('h2Count').textContent = data.headings.h2;
+                document.getElementById('h3Count').textContent = data.headings.h3;
+
+                // Meta tags
+                const metaTable = document.getElementById('metaTags');
+                metaTable.innerHTML = Object.entries(data.meta_tags).map(([key, value]) => 
+                    `<tr><td>${key}</td><td>${value || 'Not set'}</td></tr>`
+                ).join('');
+
+                // Suggested keywords
+                document.getElementById('suggestedKeywords').innerHTML = 
+                    data.suggested_keywords.length ? 
+                    data.suggested_keywords.map(keyword => `<li>${keyword}</li>`).join('') :
+                    '<li>No additional keyword suggestions</li>';
+
+                // LLM readability score
+                document.getElementById('llmReadabilityScore').innerHTML = 
+                    `<b>${data.llm_readability_score} / 5</b><br>${data.llm_readability_explanation || ''}`;
+                document.getElementById('llmReadabilitySuggestions').innerHTML = 
+                    data.llm_readability_suggestions.length ?
+                    data.llm_readability_suggestions.map(suggestion => `<li>${suggestion}</li>`).join('') :
+                    '<li>No readability suggestions</li>';
+
+                // SEO suggestions
+                document.getElementById('suggestions').innerHTML = 
+                    data.suggestions.length ?
+                    data.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('') :
+                    '<li>No SEO suggestions</li>';
+
+                loading.style.display = 'none';
+                results.style.display = 'block';
+                downloadBtn.style.display = 'block';
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                loading.style.display = 'none';
+                alert('An error occurred while analyzing the content: ' + error.message);
+            });
+        }
+
+        function downloadReport() {
+            if (!analysisData) return;
+
+            const report = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SEO Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f5f5f5; }
+        h1, h2 { color: #333; }
+        .suggestions-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .suggestions-list li {
+            padding: 8px 12px;
+            border-bottom: 1px solid #ddd;
+            line-height: 1.4;
+        }
+        .suggestions-list li:last-child {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>SEO Analysis Report</h1>
+    <p>Generated on: ${new Date().toLocaleString()}</p>
+    
+    <h2>Basic Metrics</h2>
+    <p>Word Count: ${analysisData.word_count}</p>
+    
+    <h2>Keyword Analysis</h2>
+    <table>
+        <thead><tr><th>Keyword</th><th>Count</th><th>Frequency</th><th>Interest Score</th><th>Trend</th></tr></thead>
+        <tbody>${analysisData.keyword_metrics.map(keyword => `
+            <tr>
+                <td>${keyword.keyword}</td>
+                <td>${keyword.count}</td>
+                <td>${keyword.frequency}%</td>
+                <td>${keyword.average_interest || 'N/A'}</td>
+                <td>${keyword.trending_up ? '↑' : '↓'}</td>
+            </tr>
+        `).join('')}</tbody>
+    </table>
+    
+    <h2>Heading Structure</h2>
+    <table>
+        <tr><td>H1 Tags</td><td>${analysisData.headings.h1}</td></tr>
+        <tr><td>H2 Tags</td><td>${analysisData.headings.h2}</td></tr>
+        <tr><td>H3 Tags</td><td>${analysisData.headings.h3}</td></tr>
+    </table>
+    
+    <h2>Meta Tags</h2>
+    <table>
+        ${Object.entries(analysisData.meta_tags).map(([key, value]) => 
+            `<tr><td>${key}</td><td>${value || 'Not set'}</td></tr>`
+        ).join('')}
+    </table>
+    
+    <h2>Suggested Keywords</h2>
+    <ul class="suggestions-list">${analysisData.suggested_keywords.length ? analysisData.suggested_keywords.map(keyword => `<li>${keyword}</li>`).join('') : '<li>No additional keyword suggestions</li>'}</ul>
+    
+    <h2>LLM Readability Score</h2>
+    <p><b>${analysisData.llm_readability_score} / 5</b></p>
+    <ul class="suggestions-list">${analysisData.llm_readability_suggestions.length ? analysisData.llm_readability_suggestions.map(suggestion => `<li>${suggestion}</li>`).join('') : '<li>No readability suggestions</li>'}</ul>
+    
+    <h2>SEO Suggestions</h2>
+    <ul class="suggestions-list">${analysisData.suggestions.length ? analysisData.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('') : '<li>No SEO suggestions</li>'}</ul>
+</body>
+</html>`;
+
+            const blob = new Blob([report], { type: 'text/html' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'seo-analysis-report.html';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+    </script>
+</body>
+</html>
